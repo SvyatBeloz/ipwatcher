@@ -168,43 +168,11 @@ class ActiveMonitor:
             self.logger.error(f"Ошибка при отправке Gratuitous ARP для {interface}: {str(e)}")
             return False, None
 
-    def _get_active_ips(self, iface_ip: str) -> List[str]:
-        """
-        Получает список активных IP адресов в сети с помощью nmap
-        
-        Args:
-            iface_ip (str): IP адрес интерфейса
-            
-        Returns:
-            List[str]: Список активных IP адресов
-        """
-        try:
-            # Получаем подсеть в формате CIDR (например 192.168.1.0/24)
-            import ipaddress
-            network = ipaddress.IPv4Network(f"{iface_ip}/24", strict=False)
-            network_cidr = str(network)
-            
-            # Запускаем быстрое сканирование nmap
-            nm = nmap.PortScanner()
-            nm.scan(hosts=network_cidr, arguments='-sn')  # ping scan
-            
-            # Получаем список активных IP адресов
-            active_ips = []
-            for host in nm.all_hosts():
-                if host != iface_ip:  # Исключаем свой IP
-                    active_ips.append(host)
-                    
-            self.logger.debug(f"Найдено {len(active_ips)} активных хостов в сети {network_cidr}")
-            return active_ips
-            
-        except Exception as e:
-            self.logger.error(f"Ошибка при сканировании сети {iface_ip}/24: {str(e)}")
-            return []
 
     async def start(self):
         """
         Запускает активный мониторинг сети, отправляя Gratuitous ARP
-        для IP-адресов из конфигурации
+        для IP-адресов из конфигурации с учетом исключений
         """
         while True:
             for iface in self.interfaces:
@@ -219,18 +187,80 @@ class ActiveMonitor:
                     
                     # Определяем список IP для Gratuitous ARP
                     if iface in self.config.monitoring:
-                        if 'all' in self.config.monitoring[iface]:
-                            # Отправляем один Gratuitous ARP от имени интерфейса
-                            await self.send_gratuitous_arp(iface, iface_ip)
-                        else:
-                            # Отправляем Gratuitous ARP для каждого IP из конфига
-                            for ip in self.config.monitoring[iface]:
-                                await self.send_gratuitous_arp(iface, ip)
-                    elif self.config.monitoring == 'all':
+                        settings = self.config.monitoring[iface]
+                        
+                        # Если для интерфейса указано 'all'
+                        if settings == 'all':
+                            if self.config.should_monitor_ip(iface, iface_ip):
+                                success, mac = await self.send_gratuitous_arp(iface, iface_ip)
+                                if success and mac:
+                                    self.detector.update_mapping(iface, iface_ip, mac)
+                        
+                        # Если есть детальные настройки
+                        elif isinstance(settings, dict):
+                            include = settings.get('include', 'all')
+                            exclude = settings.get('exclude', [])
+                            
+                            # Если include == 'all', используем IP интерфейса
+                            if include == 'all':
+                                if iface_ip not in exclude:
+                                    success, mac = await self.send_gratuitous_arp(iface, iface_ip)
+                                    if success and mac:
+                                        self.detector.update_mapping(iface, iface_ip, mac)
+                            # Иначе используем список IP из include
+                            else:
+                                for ip in include:
+                                    if ip not in exclude:
+                                        success, mac = await self.send_gratuitous_arp(iface, ip)
+                                        if success and mac:
+                                            self.detector.update_mapping(iface, ip, mac)
+                                            
+                    elif self.config.monitoring == {'all': 'all'}:
                         # Отправляем один Gratuitous ARP от имени интерфейса
-                        await self.send_gratuitous_arp(iface, iface_ip)
+                        success, mac = await self.send_gratuitous_arp(iface, iface_ip)
+                        if success and mac:
+                            self.detector.update_mapping(iface, iface_ip, mac)
                             
                 except Exception as e:
                     self.logger.error(f"Ошибка при мониторинге интерфейса {iface}: {str(e)}")
             
             await asyncio.sleep(self.config.active_interval)
+
+
+
+
+
+
+
+    # def _get_active_ips(self, iface_ip: str) -> List[str]:
+    #     """
+    #     Получает список активных IP адресов в сети с помощью nmap
+        
+    #     Args:
+    #         iface_ip (str): IP адрес интерфейса
+            
+    #     Returns:
+    #         List[str]: Список активных IP адресов
+    #     """
+    #     try:
+    #         # Получаем подсеть в формате CIDR (например 192.168.1.0/24)
+    #         import ipaddress
+    #         network = ipaddress.IPv4Network(f"{iface_ip}/24", strict=False)
+    #         network_cidr = str(network)
+            
+    #         # Запускаем быстрое сканирование nmap
+    #         nm = nmap.PortScanner()
+    #         nm.scan(hosts=network_cidr, arguments='-sn')  # ping scan
+            
+    #         # Получаем список активных IP адресов
+    #         active_ips = []
+    #         for host in nm.all_hosts():
+    #             if host != iface_ip:  # Исключаем свой IP
+    #                 active_ips.append(host)
+                    
+    #         self.logger.debug(f"Найдено {len(active_ips)} активных хостов в сети {network_cidr}")
+    #         return active_ips
+            
+    #     except Exception as e:
+    #         self.logger.error(f"Ошибка при сканировании сети {iface_ip}/24: {str(e)}")
+    #         return []
