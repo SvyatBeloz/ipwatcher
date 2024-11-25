@@ -1,0 +1,36 @@
+#первый вариант использовать все интерфейсы и ip адреса
+
+monitoring: all
+
+
+
+# второй вариант использовать определенные интерфейсы и все ip адреса на них
+
+# monitoring:
+#   - wlan0: all
+#   - br-832693e70853: all
+
+
+
+
+# третий вариант использовать определенные интерфейсы и определенные ip адреса
+
+# monitoring:
+#   - wlan0: all
+#   - br-832693e70853:
+#                     - 192.168.1.53
+#                     - 192.168.1.54
+#                     - 192.168.1.55
+
+active_mode:
+  enabled: true
+  interval: 10
+
+passive_mode:
+  enabled: true
+
+conflict_actions:
+  - echo '{interface} {conflict-ip} {adopted-mac}'
+
+logging:
+  level: DEBUG

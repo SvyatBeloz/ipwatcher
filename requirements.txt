@@ -1,0 +1,7 @@
+colorama>=0.4.6
+scapy>=2.5.0
+PyYAML>=6.0.1
+typing-extensions>=4.7.1
+netifaces
+pyyaml
+
