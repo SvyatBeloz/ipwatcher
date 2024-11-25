@@ -2,8 +2,9 @@
 import logging
 import sys
 import yaml
+import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any, Union
 
 # Configuration defaults
 DEFAULT_CONFIG_PATH = Path("/etc/ipwatcher/config.yaml")
@@ -19,26 +20,44 @@ class Config:
             sys.exit(1)
         try:
             with open(self.config_path, 'r') as f:
-                self.cfg = yaml.safe_load(f)
+                raw_data = f.read()
+
+            # Определяем формат файла и загружаем
+            if str(self.config_path).endswith(('.yaml', '.yml')) or not raw_data.startswith('{'):
+                logging.debug("Parsing as YAML format")
+                self.cfg = yaml.safe_load(raw_data)
+            else:
+                logging.debug("Parsing as JSON format")
+                self.cfg = json.loads(raw_data)
 
             # Загрузка настроек мониторинга
             self.monitoring = self._parse_monitoring(self.cfg.get('monitoring', 'all'))
             
             # Active mode
             active_cfg = self.cfg.get('active_mode', {})
-            self.active_enabled = active_cfg.get('enabled', True)
-            self.active_interval = active_cfg.get('interval', 10)
+            if isinstance(active_cfg, bool):
+                self.active_enabled = active_cfg
+                self.active_interval = 10
+            else:
+                self.active_enabled = active_cfg.get('enabled', True)
+                self.active_interval = active_cfg.get('interval', 10)
 
             # Passive mode
             passive_cfg = self.cfg.get('passive_mode', {})
-            self.passive_enabled = passive_cfg.get('enabled', True)
+            if isinstance(passive_cfg, bool):
+                self.passive_enabled = passive_cfg
+            else:
+                self.passive_enabled = passive_cfg.get('enabled', True)
 
             # Conflict actions
             self.conflict_actions = self.cfg.get('conflict_actions', [])
 
             # Logging
             log_cfg = self.cfg.get('logging', {})
-            self.log_level = log_cfg.get('level', 'INFO')
+            if isinstance(log_cfg, str):
+                self.log_level = log_cfg.upper()
+            else:
+                self.log_level = log_cfg.get('level', 'INFO').upper()
             
             logging.info(f"Загружена конфигурация: {self.monitoring}")
 
@@ -46,37 +65,54 @@ class Config:
             logging.error(f"Ошибка при загрузке конфигурации: {e}")
             sys.exit(1)
 
-    def _parse_monitoring(self, monitoring_cfg) -> Dict[str, List[str]]:
+    def _parse_monitoring(self, monitoring_cfg: Union[str, List, Dict]) -> Dict[str, Any]:
         """
         Парсит конфигурацию мониторинга и возвращает словарь:
         {
-            'interface_name': ['ip1', 'ip2'] или ['all'],
-            ...
+            'interface_name': 'all' | {'include': [...], 'exclude': [...]}
         }
         """
         result = {}
         
         # Вариант 1: monitoring: all
         if monitoring_cfg == 'all':
-            # Получаем список всех интерфейсов
             import netifaces
             for iface in netifaces.interfaces():
                 if not iface.startswith('lo'):  # Пропускаем локальный интерфейс
-                    result[iface] = ['all']
+                    result[iface] = 'all'
             return result
 
-        # Вариант 2 и 3: список интерфейсов с настройками
+        # Вариант 2: список интерфейсов
         if isinstance(monitoring_cfg, list):
             for item in monitoring_cfg:
-                if isinstance(item, dict):
-                    for iface, ips in item.items():
-                        if ips == 'all':
-                            result[iface] = ['all']
-                        elif isinstance(ips, list):
-                            result[iface] = ips
-                        else:
-                            logging.warning(f"Неверный формат IP для интерфейса {iface}: {ips}")
-                            continue
+                if isinstance(item, str):
+                    result[item] = 'all'
+                elif isinstance(item, dict):
+                    for iface, settings in item.items():
+                        if settings == 'all':
+                            result[iface] = 'all'
+                        elif isinstance(settings, (list, dict)):
+                            if isinstance(settings, list):
+                                result[iface] = {'include': settings, 'exclude': []}
+                            else:
+                                result[iface] = {
+                                    'include': settings.get('include', 'all'),
+                                    'exclude': settings.get('exclude', [])
+                                }
+
+        # Вариант 3: словарь с настройками
+        elif isinstance(monitoring_cfg, dict):
+            for iface, settings in monitoring_cfg.items():
+                if settings == 'all':
+                    result[iface] = 'all'
+                elif isinstance(settings, (list, dict)):
+                    if isinstance(settings, list):
+                        result[iface] = {'include': settings, 'exclude': []}
+                    else:
+                        result[iface] = {
+                            'include': settings.get('include', 'all'),
+                            'exclude': settings.get('exclude', [])
+                        }
 
         return result
 
@@ -87,5 +123,20 @@ class Config:
         if interface not in self.monitoring:
             return False
         
-        ip_list = self.monitoring[interface]
-        return 'all' in ip_list or ip in ip_list
+        settings = self.monitoring[interface]
+        
+        # Если для интерфейса указано 'all'
+        if settings == 'all':
+            return True
+            
+        # Если есть детальные настройки
+        if isinstance(settings, dict):
+            # Проверяем исключения
+            if ip in settings.get('exclude', []):
+                return False
+                
+            include = settings.get('include', 'all')
+            # Если include == 'all' или IP в списке include
+            return include == 'all' or ip in include
+            
+        return False

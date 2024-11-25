@@ -6,6 +6,7 @@ import time
 import threading
 from collections import defaultdict
 from typing import Dict, List, Optional
+import asyncio
 
 from scapy.all import conf
 
@@ -75,8 +76,17 @@ class IPConflictDetector:
         # Start active monitoring in a separate thread if enabled
         if self.config.active_enabled:
             self.logger.info("Запуск активного мониторинга")
+            
+            async def run_active_monitor():
+                await self.active_monitor.start()
+            
+            def start_async_loop():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                loop.run_until_complete(run_active_monitor())
+            
             threading.Thread(
-                target=self.active_monitor.start,
+                target=start_async_loop,
                 daemon=True
             ).start()
         

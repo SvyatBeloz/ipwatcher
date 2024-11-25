@@ -1,0 +1,20 @@
+{
+    "monitoring": {
+        "wlan0": "all",
+        "eth0": {
+            "include": ["192.168.1.50", "192.168.1.51"],
+            "exclude": ["192.168.1.1"]
+        }
+    },
+    "passive_mode": true,
+    "active_mode": {
+        "enabled": true,
+        "interval": 10
+    },
+    "conflict_actions": [
+        "log",
+        "notify",
+        "disable_interface"
+    ],
+    "logging": "DEBUG"
+}

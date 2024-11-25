@@ -1,36 +1,41 @@
-#первый вариант использовать все интерфейсы и ip адреса
-
+# Вариант 1: мониторинг всех интерфейсов
 monitoring: all
 
-
-
-# второй вариант использовать определенные интерфейсы и все ip адреса на них
-
+# Вариант 2: мониторинг конкретных интерфейсов
 # monitoring:
 #   - wlan0: all
-#   - br-832693e70853: all
+#   - eth0:
+#       include: 
+#         - 192.168.1.100
+#         - 192.168.1.101
+#       exclude:
+#         - 192.168.1.1
 
-
-
-
-# третий вариант использовать определенные интерфейсы и определенные ip адреса
-
+# Вариант 3: мониторинг с детальными настройками
 # monitoring:
-#   - wlan0: all
-#   - br-832693e70853:
-#                     - 192.168.1.53
-#                     - 192.168.1.54
-#                     - 192.168.1.55
+#   wlan0: all
+#   eth0:
+#     include:
+#       - 192.168.1.50
+#       - 192.168.1.51
+#     exclude:
+#       - 192.168.1.1
+#   br0:
+#     include: all
+#     exclude:
+#       - 172.16.0.1
 
+# Настройки режимов работы
+passive_mode: true
 active_mode:
   enabled: true
   interval: 10
 
-passive_mode:
-  enabled: true
-
+# Действия при конфликте
 conflict_actions:
-  - echo '{interface} {conflict-ip} {adopted-mac}'
+  - log
+  - notify
+  - disable_interface
 
-logging:
-  level: DEBUG
+# Уровень логирования (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+logging: DEBUG
