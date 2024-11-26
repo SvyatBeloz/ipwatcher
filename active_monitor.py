@@ -7,6 +7,8 @@ from typing import List, Tuple, Optional
 from scapy.all import Ether, ARP, srp, conf
 import netifaces
 import nmap
+from pyroute2 import IPRoute
+import ipaddress
 
 class ActiveMonitor:
     def __init__(self, config, logger: logging.Logger, detector):
@@ -98,7 +100,7 @@ class ActiveMonitor:
                 self.logger.info(f"Получены ответы от {dest_ip}: MAC адреса={mac_addresses}")
                 return True, mac_addresses
             
-            self.logger.info(f"Нет ответа от {dest_ip}")
+            self.logger.debug(f"Нет ответа от {dest_ip}")
             return False, None
 
         except Exception as e:
@@ -132,19 +134,19 @@ class ActiveMonitor:
             
             # Если monitoring = "all" или интерфейс не указан в конфигурации
             if monitoring_config == "all" or (isinstance(monitoring_config, dict) and iface not in monitoring_config):
-                include = await self._get_active_ips_combined(iface_ip)
+                include = await self._get_active_ips(iface_ip)
                 exclude = []
             else:
                 # Получаем настройки для конкретного интерфейса
                 settings = monitoring_config[iface]
                 if isinstance(settings, str) and settings == "all":
-                    include = await self._get_active_ips_combined(iface_ip)
+                    include = await self._get_active_ips(iface_ip)
                     exclude = []
                 else:
                     include = settings.get("include", "all")
                     exclude = settings.get("exclude", [])
                     if include == "all":
-                        include = await self._get_active_ips_combined(iface_ip)
+                        include = await self._get_active_ips(iface_ip)
 
             # Исключаем адреса из `exclude`
             ips_to_monitor = [ip for ip in include if ip not in exclude]
@@ -173,244 +175,46 @@ class ActiveMonitor:
         except Exception as e:
             self.logger.error(f"Ошибка обработки IP {ip} на интерфейсе {iface}: {str(e)}")
 
-   
-    async def _get_active_ips(self, iface_ip: str) -> List[str]:
+    async def _get_active_ips(self, iface_ip: str = None) -> List[str]:
         """
-        Получает список активных IP адресов в сети с помощью nmap
+        Получает список активных IP-адресов в сети с помощью pyroute2.
+        Исключает локальные адреса и адреса Docker-контейнеров.
         
         Args:
-            iface_ip (str): IP адрес интерфейса
+            iface_ip (str): IP-адрес интерфейса для определения сети
             
         Returns:
-            List[str]: Список активных IP адресов
+            List[str]: Список активных IP-адресов
         """
         try:
-            # Получаем подсеть в формате CIDR (например 192.168.1.0/24)
-            import ipaddress
-            network = ipaddress.IPv4Network(f"{iface_ip}/24", strict=False)
-            network_cidr = str(network)
-            
-            # Запускаем быстрое сканирование nmap
-            nm = nmap.PortScanner()
-            nm.scan(hosts=network_cidr, arguments='-sn')  # ping scan
-            
-            # Получаем список активных IP адресов
-            active_ips = []
-            for host in nm.all_hosts():
-                if host != iface_ip:  # Исключаем свой IP
-                    active_ips.append(host)
-                    
-            self.logger.debug(f"Найдено {len(active_ips)} активных хостов в сети {network_cidr}")
-            return active_ips
-            
-        except Exception as e:
-            self.logger.error(f"Ошибка при сканировании сети {iface_ip}/24: {str(e)}")
-            return []
-
-    async def _get_active_ips_arp(self, iface_ip: str, interface: str = None) -> List[str]:
-        """
-        Получает список активных IP адресов в сети с помощью ARP запросов
-        
-        Args:
-            iface_ip (str): IP адрес интерфейса
-            interface (str, optional): Имя сетевого интерфейса
-            
-        Returns:
-            List[str]: Список активных IP адресов
-        """
-        try:
-            # Получаем подсеть в формате CIDR
-            import ipaddress
-            network = ipaddress.IPv4Network(f"{iface_ip}/24", strict=False)
-            
-            # Создаем ARP запрос для всей подсети
-            arp = ARP(pdst=str(network))
-            ether = Ether(dst="ff:ff:ff:ff:ff:ff")
-            packet = ether/arp
-
-            self.logger.debug(f"Начало ARP-сканирования сети {network}")
-            
-            # Отправляем запросы асинхронно
-            result = await asyncio.to_thread(
-                lambda: srp(
-                    packet,
-                    timeout=1,  # маленький таймаут для скорости
-                    verbose=False,
-                    iface=interface
-                )[0]
-            )
-            
-            # Собираем IP адреса из ответов
-            active_ips = []
-            for sent, received in result:
-                if received.psrc != iface_ip:  # Исключаем свой IP
-                    active_ips.append(received.psrc)
-                    self.logger.debug(f"Найден активный хост: IP={received.psrc}, MAC={received.hwsrc}")
-                    
-            self.logger.debug(f"Найдено {len(active_ips)} активных хостов в сети {network}")
-            return active_ips
-            
-        except Exception as e:
-            self.logger.error(f"Ошибка при ARP-сканировании сети {iface_ip}/24: {str(e)}")
-            return []
-
-    async def _get_active_ips_combined(self, iface_ip: str, interface: str = None) -> List[str]:
-        """
-        Получает список активных IP адресов в сети, комбинируя ARP и nmap сканирование
-        
-        Args:
-            iface_ip (str): IP адрес интерфейса
-            interface (str, optional): Имя сетевого интерфейса
-            
-        Returns:
-            List[str]: Список активных IP адресов
-        """
-        try:
-            # Получаем результаты ARP сканирования
-            arp_ips = set(await self._get_active_ips_arp(iface_ip, interface))
-            self.logger.debug(f"ARP сканирование нашло {len(arp_ips)} хостов")
-            
-            # Получаем результаты nmap сканирования
-            nmap_ips = set(await self._get_active_ips(iface_ip))
-            self.logger.debug(f"Nmap сканирование нашло {len(nmap_ips)} хостов")
-            
-            # Объединяем результаты
-            all_ips = list(arp_ips.union(nmap_ips))
-            self.logger.debug(f"Всего найдено {len(all_ips)} уникальных хостов")
-            
-            return all_ips
-            
-        except Exception as e:
-            self.logger.error(f"Ошибка при комбинированном сканировании сети {iface_ip}/24: {str(e)}")
-            return []
-
-    # async def send_gratuitous_arp(self, interface: str, src_ip: str = None) -> Tuple[bool, Optional[str]]:
-    #     """
-    #     Отправляет Gratuitous ARP запрос и ждет ответа
-        
-    #     Args:
-    #         interface (str): Сетевой интерфейс
-    #         src_ip (str): IP адрес интерфейса (если не указан, будет получен автоматически)
-            
-    #     Returns:
-    #         Tuple[bool, Optional[str]]: (успех, MAC адрес ответившего устройства)
-    #     """
-    #     try:
-    #         # Получаем IP адрес интерфейса если не указан
-    #         if not src_ip:
-    #             addrs = netifaces.ifaddresses(interface).get(netifaces.AF_INET, [])
-    #             if not addrs:
-    #                 self.logger.error(f"Не удалось получить IP адрес для интерфейса {interface}")
-    #                 return False, None
-    #             src_ip = addrs[0]['addr']
-            
-    #         # Получаем MAC адрес интерфейса
-    #         link_info = netifaces.ifaddresses(interface).get(netifaces.AF_LINK)
-    #         if not link_info:
-    #             self.logger.error(f"Не удалось получить MAC адрес для интерфейса {interface}")
-    #             return False, None
+            # Создаем экземпляр IPRoute
+            with IPRoute() as ipr:
+                active_ips = []
                 
-    #         mac = link_info[0]['addr']
-            
-    #         # Создаем Gratuitous ARP пакет
-    #         # pdst равен psrc для Gratuitous ARP
-    #         arp = ARP(
-    #             op=1,  # ARP request
-    #             hwsrc=mac,
-    #             psrc=src_ip,
-    #             hwdst="ff:ff:ff:ff:ff:ff",
-    #             pdst=src_ip
-    #         )
-            
-    #         # Создаем Ethernet фрейм
-    #         ether = Ether(
-    #             src=mac,
-    #             dst="ff:ff:ff:ff:ff:ff"
-    #         )
-            
-    #         packet = ether/arp
-            
-    #         self.logger.debug(f"Отправка Gratuitous ARP для {interface} (IP: {src_ip}, MAC: {mac})")
-            
-    #         # Отправляем пакет и получаем ответы
-    #         ans, unans = await asyncio.to_thread(
-    #             lambda: srp(
-    #                 packet,
-    #                 timeout=1,
-    #                 verbose=False,
-    #                 iface=interface
-    #             )
-    #         )
-            
-    #         # Проверяем ответы
-    #         if ans:
-    #             # Получаем MAC адрес из первого ответа
-    #             response_mac = ans[0][1].hwsrc
-    #             response_ip = ans[0][1].psrc
-    #             self.logger.debug(f"Получен ответ на Gratuitous ARP: IP={response_ip}, MAC={response_mac}")
-    #             return True, response_mac
-            
-    #         self.logger.debug(f"Нет ответов на Gratuitous ARP для {src_ip}")
-    #         return False, None
-            
-    #     except Exception as e:
-    #         self.logger.error(f"Ошибка при отправке Gratuitous ARP для {interface}: {str(e)}")
-    #         return False, None
-
-
-    # async def start(self):
-    #     """
-    #     Запускает активный мониторинг сети, отправляя Gratuitous ARP
-    #     для IP-адресов из конфигурации с учетом исключений
-    #     """
-    #     while True:
-    #         for iface in self.interfaces:
-    #             try:
-    #                 # Получаем IP адрес интерфейса
-    #                 addrs = netifaces.ifaddresses(iface).get(netifaces.AF_INET, [])
-    #                 if not addrs:
-    #                     continue
-                        
-    #                 iface_ip = addrs[0]['addr']
-    #                 self.logger.debug(f"Мониторинг через интерфейс {iface} (IP: {iface_ip})")
+                # Получаем индекс интерфейса по IP-адресу
+                if iface_ip:
+                    network = ipaddress.ip_network(f"{iface_ip}/24", strict=False)
                     
-    #                 # Определяем список IP для Gratuitous ARP
-    #                 if iface in self.config.monitoring:
-    #                     settings = self.config.monitoring[iface]
-                        
-    #                     # Если для интерфейса указано 'all'
-    #                     if settings == 'all':
-    #                         if self.config.should_monitor_ip(iface, iface_ip):
-    #                             success, mac = await self.send_gratuitous_arp(iface, iface_ip)
-    #                             if success and mac:
-    #                                 self.detector.update_mapping(iface, iface_ip, mac)
-                        
-    #                     # Если есть детальные настройки
-    #                     elif isinstance(settings, dict):
-    #                         include = settings.get('include', 'all')
-    #                         exclude = settings.get('exclude', [])
-                            
-    #                         # Если include == 'all', используем IP интерфейса
-    #                         if include == 'all':
-    #                             if iface_ip not in exclude:
-    #                                 success, mac = await self.send_gratuitous_arp(iface, iface_ip)
-    #                                 if success and mac:
-    #                                     self.detector.update_mapping(iface, iface_ip, mac)
-    #                         # Иначе используем список IP из include
-    #                         else:
-    #                             for ip in include:
-    #                                 if ip not in exclude:
-    #                                     success, mac = await self.send_gratuitous_arp(iface, ip)
-    #                                     if success and mac:
-    #                                         self.detector.update_mapping(iface, ip, mac)
-                                            
-    #                 elif self.config.monitoring == {'all': 'all'}:
-    #                     # Отправляем один Gratuitous ARP от имени интерфейса
-    #                     success, mac = await self.send_gratuitous_arp(iface, iface_ip)
-    #                     if success and mac:
-    #                         self.detector.update_mapping(iface, iface_ip, mac)
-                            
-    #             except Exception as e:
-    #                 self.logger.error(f"Ошибка при мониторинге интерфейса {iface}: {str(e)}")
-            
-    #         await asyncio.sleep(self.config.active_interval)
+                    # Получаем все адреса из таблицы маршрутизации
+                    for addr in ipr.get_addr():
+                        attrs = dict(addr['attrs'])
+                        if 'IFA_ADDRESS' in attrs:
+                            ip = attrs['IFA_ADDRESS']
+                            try:
+                                ip_obj = ipaddress.ip_address(ip)
+                                # Проверяем, что IP адрес находится в той же сети
+                                if (ip_obj.version == 4 and
+                                    not ip_obj.is_loopback and
+                                    # not str(ip_obj).startswith('172.') and
+                                    # not ip_obj.is_link_local and
+                                    ip_obj in network):  # Проверяем, что адрес в той же сети
+                                    active_ips.append(str(ip_obj))
+                            except ValueError:
+                                continue
+                
+                self.logger.debug(f"Найдены активные IP-адреса для сети {iface_ip}: {active_ips}")
+                return active_ips
+                
+        except Exception as e:
+            self.logger.error(f"Ошибка при получении активных IP-адресов: {str(e)}")
+            return []
