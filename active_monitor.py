@@ -112,10 +112,56 @@ class ActiveMonitor:
 
     async def start(self):
         """Основной цикл мониторинга интерфейсов."""
+        # Запускаем мониторинг изменений IP-адресов
+        asyncio.create_task(self._monitor_ip_changes())
+        
         while True:
             tasks = [self.monitor_interface(iface) for iface in self.interfaces]
             await asyncio.gather(*tasks)
             await asyncio.sleep(self.config.active_interval)
+
+    async def _monitor_ip_changes(self):
+        """
+        Мониторинг изменений IP-адресов на интерфейсах с помощью pyroute2.
+        """
+        try:
+            with IPRoute() as ipr:
+                # Подписываемся на все события, связанные с адресами (RTM_NEWADDR, RTM_DELADDR)
+                ipr.bind()
+                
+                while True:
+                    # Получаем следующее сообщение
+                    msg = await asyncio.to_thread(ipr.get)
+                    
+                    # Обрабатываем только события, связанные с IP-адресами
+                    if msg['event'] in ['RTM_NEWADDR', 'RTM_DELADDR']:
+                        # Получаем имя интерфейса
+                        if_index = msg['index']
+                        if_name = None
+                        
+                        # Получаем имя интерфейса по индексу
+                        links = ipr.get_links()
+                        for link in links:
+                            if link['index'] == if_index:
+                                if_attrs = dict(link['attrs'])
+                                if_name = if_attrs.get('IFLA_IFNAME')
+                                break
+                        
+                        if if_name and if_name in self.interfaces:
+                            event_type = "добавлен" if msg['event'] == 'RTM_NEWADDR' else "удален"
+                            attrs = dict(msg['attrs'])
+                            if 'IFA_ADDRESS' in attrs:
+                                ip = attrs['IFA_ADDRESS']
+                                self.logger.info(f"IP-адрес {ip} был {event_type} на интерфейсе {if_name}")
+                                
+                                # Здесь можно добавить дополнительную логику обработки изменений
+                                # Например, обновить список отслеживаемых IP-адресов
+                    
+                    # Небольшая пауза для предотвращения высокой загрузки CPU
+                    await asyncio.sleep(0.1)
+                    
+        except Exception as e:
+            self.logger.error(f"Ошибка при мониторинге изменений IP: {str(e)}")
 
     async def monitor_interface(self, iface: str):
         """
