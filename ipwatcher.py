@@ -71,7 +71,7 @@ class IPConflictDetector:
 
     def run(self):
         # Start passive monitoring
-        self.passive_monitor.start()
+        # self.passive_monitor.start()
         
         # Start active monitoring in a separate thread if enabled
         if self.config.active_enabled:

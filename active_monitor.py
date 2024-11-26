@@ -48,7 +48,7 @@ class ActiveMonitor:
         src_ip: str = None,
         dst_mac: str = "ff:ff:ff:ff:ff:ff",
         timeout: float = 2
-    ) -> Tuple[bool, Optional[str]]:
+    ) -> Tuple[bool, Optional[List[str]]]:
         """
         Асинхронно отправляет ARP запрос для указанного IP адреса
         
@@ -61,9 +61,9 @@ class ActiveMonitor:
             timeout (float): Таймаут ожидания ответа в секундах
             
         Returns:
-            Tuple[bool, Optional[str]]: (успех, MAC адрес)
-                - Если устройство ответило: (True, 'mac:address')
-                - Если устройство не ответило: (False, None)
+            Tuple[bool, Optional[List[str]]]: (успех, список MAC адресов)
+                - Если устройства ответили: (True, ['mac:address1', 'mac:address2', ...])
+                - Если устройства не ответили: (False, None)
         """
 
         try:
@@ -93,12 +93,12 @@ class ActiveMonitor:
 
             # Проверяем результат
             if result:
-                # Получаем MAC адрес из первого ответа
-                mac = result[0][1].hwsrc
-                self.logger.debug(f"Получен ответ от {dest_ip}: MAC={mac}")
-                return True, mac
+                # Получаем все MAC адреса из ответов
+                mac_addresses = [response[1].hwsrc for response in result]
+                self.logger.info(f"Получены ответы от {dest_ip}: MAC адреса={mac_addresses}")
+                return True, mac_addresses
             
-            self.logger.debug(f"Нет ответа от {dest_ip}")
+            self.logger.info(f"Нет ответа от {dest_ip}")
             return False, None
 
         except Exception as e:
@@ -132,19 +132,19 @@ class ActiveMonitor:
             
             # Если monitoring = "all" или интерфейс не указан в конфигурации
             if monitoring_config == "all" or (isinstance(monitoring_config, dict) and iface not in monitoring_config):
-                include = await self._get_active_ips(iface_ip)
+                include = await self._get_active_ips_combined(iface_ip)
                 exclude = []
             else:
                 # Получаем настройки для конкретного интерфейса
                 settings = monitoring_config[iface]
                 if isinstance(settings, str) and settings == "all":
-                    include = await self._get_active_ips(iface_ip)
+                    include = await self._get_active_ips_combined(iface_ip)
                     exclude = []
                 else:
                     include = settings.get("include", "all")
                     exclude = settings.get("exclude", [])
                     if include == "all":
-                        include = await self._get_active_ips(iface_ip)
+                        include = await self._get_active_ips_combined(iface_ip)
 
             # Исключаем адреса из `exclude`
             ips_to_monitor = [ip for ip in include if ip not in exclude]
@@ -165,10 +165,11 @@ class ActiveMonitor:
         Отправляет ARP-запрос и обновляет карту MAC-IP.
         """
         try:
-            success, mac = await self.send_arp_request(dest_ip=ip, interface=iface,src_ip=ip)
-            if success and mac:
+            success, macs = await self.send_arp_request(dest_ip=ip, interface=iface,src_ip=ip)
+            if success and macs:
+                self.logger.info("у меня хотят украсть ip,где-то двойник")
                 # self.detector.update_mapping(iface, ip, mac)
-                self.logger.debug(f"Обновлены MAC-адреса для интерфейса {iface}: {ip} -> {mac}")
+                # self.logger.debug(f"Обновлены MAC-адреса для интерфейса {iface}: {ip} -> {macs}")
         except Exception as e:
             self.logger.error(f"Ошибка обработки IP {ip} на интерфейсе {iface}: {str(e)}")
 
@@ -206,7 +207,82 @@ class ActiveMonitor:
             self.logger.error(f"Ошибка при сканировании сети {iface_ip}/24: {str(e)}")
             return []
 
+    async def _get_active_ips_arp(self, iface_ip: str, interface: str = None) -> List[str]:
+        """
+        Получает список активных IP адресов в сети с помощью ARP запросов
+        
+        Args:
+            iface_ip (str): IP адрес интерфейса
+            interface (str, optional): Имя сетевого интерфейса
+            
+        Returns:
+            List[str]: Список активных IP адресов
+        """
+        try:
+            # Получаем подсеть в формате CIDR
+            import ipaddress
+            network = ipaddress.IPv4Network(f"{iface_ip}/24", strict=False)
+            
+            # Создаем ARP запрос для всей подсети
+            arp = ARP(pdst=str(network))
+            ether = Ether(dst="ff:ff:ff:ff:ff:ff")
+            packet = ether/arp
 
+            self.logger.debug(f"Начало ARP-сканирования сети {network}")
+            
+            # Отправляем запросы асинхронно
+            result = await asyncio.to_thread(
+                lambda: srp(
+                    packet,
+                    timeout=1,  # маленький таймаут для скорости
+                    verbose=False,
+                    iface=interface
+                )[0]
+            )
+            
+            # Собираем IP адреса из ответов
+            active_ips = []
+            for sent, received in result:
+                if received.psrc != iface_ip:  # Исключаем свой IP
+                    active_ips.append(received.psrc)
+                    self.logger.debug(f"Найден активный хост: IP={received.psrc}, MAC={received.hwsrc}")
+                    
+            self.logger.debug(f"Найдено {len(active_ips)} активных хостов в сети {network}")
+            return active_ips
+            
+        except Exception as e:
+            self.logger.error(f"Ошибка при ARP-сканировании сети {iface_ip}/24: {str(e)}")
+            return []
+
+    async def _get_active_ips_combined(self, iface_ip: str, interface: str = None) -> List[str]:
+        """
+        Получает список активных IP адресов в сети, комбинируя ARP и nmap сканирование
+        
+        Args:
+            iface_ip (str): IP адрес интерфейса
+            interface (str, optional): Имя сетевого интерфейса
+            
+        Returns:
+            List[str]: Список активных IP адресов
+        """
+        try:
+            # Получаем результаты ARP сканирования
+            arp_ips = set(await self._get_active_ips_arp(iface_ip, interface))
+            self.logger.debug(f"ARP сканирование нашло {len(arp_ips)} хостов")
+            
+            # Получаем результаты nmap сканирования
+            nmap_ips = set(await self._get_active_ips(iface_ip))
+            self.logger.debug(f"Nmap сканирование нашло {len(nmap_ips)} хостов")
+            
+            # Объединяем результаты
+            all_ips = list(arp_ips.union(nmap_ips))
+            self.logger.debug(f"Всего найдено {len(all_ips)} уникальных хостов")
+            
+            return all_ips
+            
+        except Exception as e:
+            self.logger.error(f"Ошибка при комбинированном сканировании сети {iface_ip}/24: {str(e)}")
+            return []
 
     # async def send_gratuitous_arp(self, interface: str, src_ip: str = None) -> Tuple[bool, Optional[str]]:
     #     """
@@ -338,4 +414,3 @@ class ActiveMonitor:
     #                 self.logger.error(f"Ошибка при мониторинге интерфейса {iface}: {str(e)}")
             
     #         await asyncio.sleep(self.config.active_interval)
-
