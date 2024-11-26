@@ -1,5 +1,5 @@
 # Вариант 1: мониторинг всех интерфейсов
-# monitoring: all
+monitoring: all
 
 # Вариант 2: мониторинг конкретных интерфейсов
 # monitoring:
@@ -12,18 +12,18 @@
 #         - 192.168.1.1
 
 # Вариант 3: мониторинг с детальными настройками
-monitoring:
-  # wlan0: all
-  wlan0:
-    include:
-      - 192.168.1.50
-      - 192.168.1.51
-    exclude:
-      - 192.168.1.1
-  br0:
-    include: all
-    exclude:
-      - 172.16.0.1
+# monitoring:
+#   # wlan0: all
+#   wlan0:
+#     include:
+#       - 192.168.1.50
+#       - 192.168.1.51
+#     exclude:
+#       - 192.168.1.1
+#   br0:
+#     include: all
+#     exclude:
+#       - 172.16.0.1
 
 # Настройки режимов работы
 passive_mode: true
@@ -33,9 +33,12 @@ active_mode:
 
 # Действия при конфликте
 conflict_actions:
-  - log
-  - notify
-  - disable_interface
+  # - log
+  # - notify
+  # - disable_interface
+  - "/home/almondy/ipwatcher/scripts/log_conflict.sh {interface} {conflict-ip} {adopted-mac}"
+  - "/home/almondy/ipwatcher/scripts/notify_conflict.sh {interface} {conflict-ip} {adopted-mac}"
+  - "sudo /home/almondy/ipwatcher/scripts/disable_interface.sh {interface} {conflict-ip} {adopted-mac}"
 
 # Уровень логирования (DEBUG, INFO, WARNING, ERROR, CRITICAL)
 logging: DEBUG
