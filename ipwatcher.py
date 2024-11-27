@@ -2,11 +2,9 @@
 import logging
 import subprocess
 import sys
-import time
-import threading
+import asyncio
 from collections import defaultdict
 from typing import Dict, List, Optional
-import asyncio
 
 from scapy.all import conf
 
@@ -70,29 +68,17 @@ class IPConflictDetector:
         self.active_monitor = ActiveMonitor(self.config, self.logger, self.detector)
 
     def run(self):
-        # Start passive monitoring
-        # self.passive_monitor.start()
-        
-        # Start active monitoring in a separate thread if enabled
-        if self.config.active_enabled:
-            self.logger.info("Запуск активного мониторинга")
+        async def main():
+            # Start passive monitoring
+            # self.passive_monitor.start()
             
-            async def run_active_monitor():
+            # Start active monitoring if enabled
+            if self.config.active_enabled:
+                self.logger.info("Запуск активного мониторинга")
                 await self.active_monitor.start()
-            
-            def start_async_loop():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(run_active_monitor())
-            
-            threading.Thread(
-                target=start_async_loop,
-                daemon=True
-            ).start()
         
         try:
-            while True:
-                time.sleep(1)
+            asyncio.run(main())
         except KeyboardInterrupt:
             self.logger.info("Программа остановлена пользователем")
             sys.exit(0)
