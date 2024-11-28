@@ -12,6 +12,7 @@ from config import Config
 from logger import Logger
 from active_monitor import ActiveMonitor
 from passive_monitor import PassiveMonitor
+from monitoring import NetworkMonitor
 
 class ConflictDetector:
     def __init__(self, config: Config, logger: logging.Logger):
@@ -54,6 +55,17 @@ class ConflictDetector:
             except subprocess.CalledProcessError as e:
                 self.logger.error(f"Ошибка выполнения команды: {e}")
 
+    def handle_ip_conflict(self, interface: str, ip: str, mac: str):
+        """Обработка обнаруженного конфликта IP адресов"""
+        self.logger.warning(f"Конфликт IP адресов на {interface}:")
+        self.logger.warning(f"IP адрес {ip} используется устройством с MAC {mac}")
+        
+        # TODO: Добавить дополнительные действия при обнаружении конфликта
+        # Например:
+        # - Отправка уведомления администратору
+        # - Запись в базу данных
+        # - Автоматическое изменение IP адреса
+
 
 class IPConflictDetector:
     def __init__(self):
@@ -69,13 +81,42 @@ class IPConflictDetector:
 
     def run(self):
         async def main():
-            # Start passive monitoring
-            # self.passive_monitor.start()
+            tasks = []
             
-            # Start active monitoring if enabled
-            if self.config.active_enabled:
-                self.logger.info("Запуск активного мониторинга")
-                await self.active_monitor.start()
+            # Запускаем базовый мониторинг интерфейсов
+            async with self.active_monitor as monitor:
+                tasks.append(asyncio.create_task(monitor.monitor_interfaces_changes()))
+                
+                # Запускаем активный мониторинг если он включен
+                if self.config.active_enabled:
+                    self.logger.info("Запуск активного мониторинга...")
+                    tasks.append(asyncio.create_task(monitor.start_active_monitor()))
+                
+                # Запускаем пассивный мониторинг если он включен
+                if self.config.passive_enabled:
+                    self.logger.info("Запуск пассивного мониторинга...")
+                    tasks.append(asyncio.create_task(monitor.start_passive_monitor()))
+
+                if not tasks:
+                    self.logger.warning("Ни один режим мониторинга не включен в конфигурации!")
+                    return
+
+                try:
+                    # Запускаем все задачи параллельно
+                    await asyncio.gather(*tasks)
+                except asyncio.CancelledError:
+                    self.logger.info("Получен сигнал остановки, завершаем работу...")
+                except Exception as e:
+                    self.logger.error(f"Ошибка в процессе мониторинга: {str(e)}")
+                finally:
+                    # Отменяем все запущенные задачи
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                            try:
+                                await task
+                            except asyncio.CancelledError:
+                                pass
         
         try:
             asyncio.run(main())
